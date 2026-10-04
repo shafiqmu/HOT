@@ -207,9 +207,16 @@ def view_function(contract, method, args_dict):
 def resolve_account_id(public_key):
     """Cari account_id dari public key via nearblocks."""
     url = f"https://api.nearblocks.io/v1/keys/{public_key}"
-    # nearblocks membatasi ~10 req/menit -> retry dengan jeda kalau kena 429
-    for attempt in range(4):
-        r = requests.get(url, timeout=15)
+    # nearblocks membatasi ~10 req/menit -> retry kalau kena 429
+    # juga handle DNS/connection error (jaringan HP sering flaky)
+    backoff = 10
+    for attempt in range(6):
+        try:
+            r = requests.get(url, timeout=15)
+        except requests.exceptions.RequestException:
+            time.sleep(backoff)
+            backoff += 15
+            continue
         if r.status_code == 429:
             time.sleep(20)
             continue
