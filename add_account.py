@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-Tambah akun ke data/accounts.json secara interaktif.
+Tambah akun ke data/accounts.json.
 
 Cara pakai:
-  python3 add_account.py
+  python3 add_account.py            # paste PK (boleh banyak sekaligus)
+  python3 add_account.py keys.txt   # baca PK dari file
 
-Kamu tinggal paste private key (format ed25519:...), script akan:
-  1. Validasi format
-  2. Cek akunnya ada di NEAR mainnet
-  3. Cek akunnya sudah mining di game.hot.tg
-  4. Simpan ke accounts.json
+Format PK (2-duanya diterima):
+  ed25519:3S4QZ...   (dengan prefix)
+  3S4QZ...           (tanpa prefix)
+  1 PK per baris
 
-Tekan Enter kosong untuk selesai.
+Perintah saat input:
+  (enter kosong)     selesai
+  selesai            selesai
+  hapus <no>         hapus akun no X
+  list               lihat daftar
 """
 
 import json
@@ -19,8 +23,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from bot import (ACCOUNTS_FILE, DATA_DIR, C, auto_resolve_account_ids,
-                 get_game_state, parse_near_key, resolve_account_id)
+from bot import (ACCOUNTS_FILE, DATA_DIR, C, get_game_state,
+                 parse_near_key, resolve_account_id)
 
 
 def load_data():
@@ -35,11 +39,57 @@ def load_data():
 
 def save_data(data):
     os.makedirs(DATA_DIR, exist_ok=True)
-    # chmod 600 biar cuma owner yang bisa baca
     fd = os.open(ACCOUNTS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
     os.chmod(ACCOUNTS_FILE, 0o600)
+
+
+def process_pk(pk, accounts, existing_pks):
+    """Proses 1 PK. Return (True, msg) / (False, msg) / (None, None)"""
+    pk = pk.strip()
+    if not pk:
+        return None, None
+    try:
+        _, pub = parse_near_key(pk)
+    except Exception as e:
+        return False, f"format salah: {e}"
+
+    if pk in existing_pks:
+        return False, "sudah ada di daftar"
+
+    try:
+        aid = resolve_account_id(pub)
+    except Exception as e:
+        return False, f"error: {e}"
+
+    if not aid:
+        return False, "tidak punya akun di NEAR mainnet"
+
+    extra = ""
+    try:
+        gs = get_game_state(aid)
+        if gs is None:
+            extra = " (belum mining)"
+        else:
+            bal = gs.get("balance", 0) / 1e18
+            extra = f" HOT {bal:.4f} · L{gs.get('storage')}"
+    except Exception:
+        pass
+
+    accounts.append({"private_key": pk})
+    existing_pks.add(pk)
+    return True, f"{aid}{extra}"
+
+
+def show_list(accounts):
+    if not accounts:
+        print(f"  {C.GRY}(kosong){C.R}")
+        return
+    for i, acc in enumerate(accounts, 1):
+        pk = acc.get("private_key", "")
+        print(f"  {C.YLW}{i:2d}.{C.R} {acc.get('account_id', '?')}  "
+              f"{C.GRY}{pk[:10]}...{C.R}")
 
 
 def main():
@@ -47,69 +97,77 @@ def main():
     accounts = data.get("accounts", [])
     existing_pks = {a.get("private_key", "").strip() for a in accounts}
 
+    # ── mode: baca dari file ──
+    args = sys.argv[1:]
+    if args and os.path.exists(args[0]):
+        path = args[0]
+        print(f"\n{C.CYN}Baca PK dari {path}{C.R}")
+        with open(path) as f:
+            lines = [l.strip() for l in f if l.strip()]
+        print(f"{C.GRY}{len(lines)} baris ditemukan{C.R}\n")
+        ok = fail = 0
+        for i, line in enumerate(lines, 1):
+            status, msg = process_pk(line, accounts, existing_pks)
+            if status is None:
+                continue
+            if status:
+                print(f"  {C.GRN}✓{C.R} [{i}/{len(lines)}] {msg}")
+                ok += 1
+            else:
+                print(f"  {C.RED}✗{C.R} [{i}/{len(lines)}] {msg}")
+                fail += 1
+        data["accounts"] = accounts
+        save_data(data)
+        print(f"\n{C.BOLD}Selesai: {C.GRN}{ok} sukses{C.R}, {C.RED}{fail} gagal{C.R}")
+        print(f"{C.GRY}Total tersimpan: {len(accounts)} akun{C.R}\n")
+        return
+
+    # ── mode interaktif ──
     print(f"\n{C.BOLD}HOT Wallet - Tambah Akun{C.R}")
-    print(f"{C.GRY}Format: ed25519:xxxxx...{C.R}")
-    print(f"{C.GRY}Enter kosong = selesai{C.R}")
+    print(f"{C.GRY}Paste PK, 1 per baris (boleh banyak sekaligus){C.R}")
+    print(f"{C.GRY}Perintah: selesai · list · hapus <no>{C.R}")
     print(C.GRY + "─" * 50 + C.R)
-    print(f"Terdaftar: {len(accounts)} akun\n")
+    print(f"Terdaftar: {C.BOLD}{len(accounts)}{C.R} akun\n")
 
     while True:
-        print(f"{C.CYN}Private Key:{C.R} ", end="", flush=True)
         try:
-            pk = input().strip()
+            raw = input(f"{C.CYN}PK>{C.R} ").strip()
         except (EOFError, KeyboardInterrupt):
             break
-        if not pk:
+
+        if not raw or raw.lower() in ("selesai", "done", "exit", "q"):
             break
 
-        # validasi format
-        try:
-            _, pub = parse_near_key(pk)
-        except Exception as e:
-            print(f"  {C.RED}❌ Format salah: {e}{C.R}")
+        if raw.lower() == "list":
+            show_list(accounts)
             continue
 
-        if pk in existing_pks:
-            print(f"  {C.YLW}⚠️  Udah ada di daftar, skip{C.R}")
+        if raw.lower().startswith("hapus "):
+            try:
+                n = int(raw.split()[1])
+                acc = accounts[n - 1]
+                existing_pks.discard(acc.get("private_key", "").strip())
+                accounts.pop(n - 1)
+                data["accounts"] = accounts
+                save_data(data)
+                print(f"  {C.YLW}dihapus: {acc.get('account_id', '?')}{C.R}")
+            except (ValueError, IndexError):
+                print(f"  {C.RED}nomor salah{C.R}")
             continue
 
-        # resolve account_id
-        print(f"  {C.GRY}cari account_id...{C.R}", end=" ", flush=True)
-        try:
-            aid = resolve_account_id(pub)
-        except Exception as e:
-            print(f"{C.RED}error: {e}{C.R}")
-            continue
-
-        if not aid:
-            print(f"{C.RED}❌ Key ini tidak punya akun di NEAR mainnet{C.R}")
-            continue
-        print(f"{C.GRN}{aid}{C.R}")
-
-        # cek game state
-        try:
-            gs = get_game_state(aid)
-            if gs is None:
-                print(f"  {C.YLW}⚠️  Akun ada, tapi belum mining di game.hot.tg{C.R}")
-            else:
-                bal = gs.get("balance", 0) / 1e18
-                print(f"  {C.GRN}✓ HOT: {bal:.4f} · storage L{gs.get('storage')}{C.R}")
-        except Exception as e:
-            print(f"  {C.YLW}⚠️  gak bisa cek game state: {e}{C.R}")
-
-        accounts.append({"private_key": pk})
-        existing_pks.add(pk)
-        data["accounts"] = accounts
-        try:
+        status, msg = process_pk(raw, accounts, existing_pks)
+        if status:
+            print(f"  {C.GRN}✓ {msg}{C.R}")
+            data["accounts"] = accounts
             save_data(data)
-            print(f"  {C.GRN}✓ tersimpan{C.R}\n")
-        except Exception as e:
-            print(f"  {C.RED}❌ gagal simpan: {e}{C.R}\n")
+        elif status is False:
+            print(f"  {C.RED}✗ {msg}{C.R}")
 
     print(f"\n{C.GRY}─" + "─" * 49 + C.R)
-    print(f"{C.BOLD}Total: {len(accounts)} akun{C.R}")
-    print(f"{C.GRY}file: {ACCOUNTS_FILE}{C.R}")
+    print(f"{C.BOLD}Total tersimpan: {len(accounts)} akun{C.R}")
     if accounts:
+        print(f"\n{C.GRY}Daftar:{C.R}")
+        show_list(accounts)
         print(f"\nLanjut: {C.CYN}python3 check.py{C.R} untuk cek semua akun")
 
 
