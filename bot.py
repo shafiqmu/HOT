@@ -20,7 +20,7 @@ import os
 import random
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import base58
 import requests
@@ -390,7 +390,10 @@ def sign_auth_intent(signing_key, account_id):
     """
     seed = secrets.token_hex(32)
     nonce_b64 = base64.b64encode(secrets.token_bytes(32)).decode()
-    deadline = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", ".000Z")
+    # deadline harus di masa depan - kalau == now, pas sampe server udah kedaluwarsa
+    # ("deadline has expired"). Beri jarak 10 menit buat jaga-jaga.
+    deadline = (datetime.now(timezone.utc) + timedelta(minutes=10)) \
+        .replace(microsecond=0).isoformat().replace("+00:00", ".000Z")
     payload = {
         "deadline": deadline,
         "nonce": nonce_b64,
