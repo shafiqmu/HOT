@@ -1,0 +1,5 @@
+{
+  "accounts": [
+    { "private_key": "ed25519:PASTE_PK_KAMU_DISINI" }
+  ]
+}

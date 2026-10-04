@@ -1,0 +1,10 @@
+# JANGAN UPLOAD KE GITHUB - file rahasia
+data/accounts.json
+data/state.json
+data/bot.log
+__pycache__/
+*.pyc
+*.pyo
+.env
+private.txt
+seed.txt
