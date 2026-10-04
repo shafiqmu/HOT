@@ -289,6 +289,38 @@ def get_account_nonce(account_id, public_key):
     return key["nonce"]
 
 
+def is_pk_registered_intents(account_id, public_key):
+    """Cek apakah public key udah terdaftar di intents.near."""
+    try:
+        res = view_function(INTENTS_CONTRACT, "public_keys_of",
+                            {"account_id": account_id})
+        return res is not None and public_key in res
+    except Exception:
+        return False
+
+
+def register_pk_intents(sk, account_id, pk_str):
+    """Daftarin public key ke intents.near (sama kaya web app HOT).
+    Diperlukan sekali per akun sebelum auth backend bisa verifikasi."""
+    nonce = (get_account_nonce(account_id, pk_str) or 0) + 1
+    block_hash = get_recent_block_hash()
+    actions = [{
+        "functionCall": {
+            "methodName": "add_public_key",
+            "args": {"public_key": pk_str},
+            "gas": 80 * 10**12,
+            "deposit": 1,  # 1 yocto
+        },
+    }]
+    signed = sign_transaction(sk, INTENTS_CONTRACT, actions, nonce, block_hash, account_id)
+    tx_res = send_tx(signed)
+    if "error" in tx_res:
+        raise RuntimeError(f"add_public_key failed: {tx_res['error']}")
+    # kasih jeda biar node sinkron
+    time.sleep(3)
+    return True
+
+
 # ── Signature NEAR (transaksi) ──────────────────────────────────────────────
 def sign_transaction(signing_key, receiver_id, actions, nonce, block_hash, account_id):
     """Buat & sign transaksi NEAR manual (borsh-like serialization)."""
@@ -384,32 +416,50 @@ def send_tx(signed_tx):
 
 # ── Intents signature (untuk auth backend) ──────────────────────────────────
 def sign_auth_intent(signing_key, account_id):
-    """Sign NEAR intent seperti signAuthIntents() di web app.
-    Payload: JSON {deadline, nonce, verifying_contract, signer_id, intents: []}
-    Signature: ed25519 over sha256(payload bytes)
+    """Sign NEAR intent seperti signAuthIntents() di web app HOT.
+
+    Web app (NEAR wallet) pakai NEP-413:
+      payload.message = JSON {signer_id, deadline, intents: []}
+      payload.recipient = "intents.near"
+      payload.nonce = base64(32 byte random)
+      signature = ed25519.sign(sha256(nep413_canonical_json))
+
+    Catatan: nonce untuk auth intent TIDAK pakai salt contract
+    (salt cuma untuk execute_intents on-chain).
     """
     seed = secrets.token_hex(32)
-    nonce_b64 = base64.b64encode(secrets.token_bytes(32)).decode()
-    # deadline harus di masa depan - kalau == now, pas sampe server udah kedaluwarsa
-    # ("deadline has expired"). Beri jarak 10 menit buat jaga-jaga.
-    deadline = (datetime.now(timezone.utc) + timedelta(minutes=10)) \
+    # deadline: 24 jam ke depan (sama kaya web app: now + 24*3600)
+    deadline = (datetime.now(timezone.utc) + timedelta(hours=24)) \
         .replace(microsecond=0).isoformat().replace("+00:00", ".000Z")
-    payload = {
-        "deadline": deadline,
-        "nonce": nonce_b64,
-        "verifying_contract": INTENTS_CONTRACT,
+    nonce_raw = secrets.token_bytes(32)
+    nonce_b64 = base64.b64encode(nonce_raw).decode()
+
+    # message = JSON inner (urutan field SAMA kaya web app: signer_id, deadline, intents)
+    message = json.dumps({
         "signer_id": account_id.lower(),
+        "deadline": deadline,
         "intents": [],
-    }
-    payload_str = json.dumps(payload, separators=(",", ":"), sort_keys=False)
-    # app NEAR: this.wallet.signMessage(je.from(c,"utf8")) -> raw ed25519
-    # signature atas UTF-8 bytes payload (ed25519 sudah hash internal, TIDAK pakai sha256)
-    sig = signing_key.sign(payload_str.encode("utf-8")).signature
+    }, separators=(",", ":"))
+
+    # NEP-413 payload canonical (recipient, nonce, message)
+    nep413_payload = json.dumps({
+        "recipient": INTENTS_CONTRACT,
+        "nonce": nonce_b64,
+        "message": message,
+    }, separators=(",", ":"))
+
+    # signature: ed25519 over sha256(payload json bytes)
+    msg_hash = hashlib.sha256(nep413_payload.encode("utf-8")).digest()
+    sig = signing_key.sign(msg_hash).signature
     return {
         "signature": f"ed25519:{base58_encode(sig)}",
         "public_key": f"ed25519:{base58_encode(bytes(signing_key.verify_key))}",
-        "standard": "raw_ed25519",
-        "payload": payload_str,
+        "standard": "nep413",
+        "payload": {
+            "recipient": INTENTS_CONTRACT,
+            "nonce": nonce_b64,
+            "message": message,
+        },
     }, seed
 
 
@@ -426,6 +476,12 @@ class HotApi:
             "DeviceId": self.device_id,
             "Platform": "web",
             "Version": "1.0",
+            # backend api0.herewallet.app 500 kalau gak ada header web browser
+            "Origin": "https://app.hot-labs.org",
+            "Referer": "https://app.hot-labs.org/",
+            "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/129.0.0.0 Safari/537.36"),
         }
         if self.jwt:
             h["Authorization"] = f"Bearer {self.jwt}"
@@ -502,7 +558,13 @@ def claim_account(account_id, private_key, charge_gas_fee=False):
     log(f"  game: balance={balance_hot:.4f} HOT, storage={gs.get('storage')}, "
         f"last_claim={datetime.fromtimestamp(last_claim_s).strftime('%H:%M:%S')}")
 
-    # 3) auth ke backend
+    # 3) daftarin pk ke intents.near kalau belum (wajib sebelum auth)
+    if not is_pk_registered_intents(account_id, pk_str):
+        log(f"  daftar pk ke intents.near (1x)...", "INFO")
+        register_pk_intents(sk, account_id, pk_str)
+        log(f"  pk terdaftar ✓", "OK")
+
+    # 4) auth ke backend
     api = HotApi(device_id=f"hotbot-{account_id.split('.')[0]}")
     api.auth(sk, account_id, pk_str)
 
