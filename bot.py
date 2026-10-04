@@ -207,14 +207,20 @@ def view_function(contract, method, args_dict):
 def resolve_account_id(public_key):
     """Cari account_id dari public key via nearblocks."""
     url = f"https://api.nearblocks.io/v1/keys/{public_key}"
-    r = requests.get(url, timeout=15)
-    if r.status_code != 200:
-        return None
-    data = r.json()
-    keys = [k for k in (data.get("keys") or []) if k.get("account_id")]
-    if not keys:
-        return None
-    return keys[0].get("account_id")
+    # nearblocks membatasi ~10 req/menit -> retry dengan jeda kalau kena 429
+    for attempt in range(4):
+        r = requests.get(url, timeout=15)
+        if r.status_code == 429:
+            time.sleep(20)
+            continue
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        keys = [k for k in (data.get("keys") or []) if k.get("account_id")]
+        if not keys:
+            return None
+        return keys[0].get("account_id")
+    return None
 
 
 def auto_resolve_account_ids(accounts):
@@ -236,6 +242,8 @@ def auto_resolve_account_ids(accounts):
                 log(f"  resolve: {pk[:25]}... -> TIDAK KETEMU akun", "ERROR")
         except Exception as e:
             log(f"  resolve error: {e}", "ERROR")
+        # nearblocks membatasi ~10 req/menit -> jeda 7s biar gak kena 429
+        time.sleep(7)
     return changed
 
 
@@ -637,6 +645,18 @@ def main_loop():
         log("Buat data/accounts.json dulu (lihat README).", "ERROR")
         return
     log(f"Loaded {len(accounts)} akun", "OK")
+
+    # Buang akun yang account_id-nya masih kosong (gagal resolve / key salah)
+    unresolved = [a for a in accounts if not a.get("account_id")]
+    if unresolved:
+        for a in unresolved:
+            pk = (a.get("private_key") or "")[:25]
+            log(f"Akun {pk}... di-skip: account_id tidak diketahui", "WARN")
+        accounts = [a for a in accounts if a.get("account_id")]
+        log(f"{len(unresolved)} akun di-skip, lanjut dengan {len(accounts)} akun", "WARN")
+    if not accounts:
+        log("Tidak ada akun yang bisa diproses", "ERROR")
+        return
 
     state = load_state()
 
