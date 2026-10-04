@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 import base58
 import requests
 from nacl.signing import SigningKey
+from py_near_primitives import Transaction, FunctionCallAction
 
 # ── Konstanta ───────────────────────────────────────────────────────────────
 RPC_URL = "https://rpc.mainnet.near.org"
@@ -312,11 +313,11 @@ def register_pk_intents(sk, account_id, pk_str):
             "deposit": 1,  # 1 yocto
         },
     }]
-    signed = sign_transaction(sk, INTENTS_CONTRACT, actions, nonce, block_hash, account_id)
+    signed = build_signed_tx(sk, account_id, INTENTS_CONTRACT, actions,
+                             nonce, block_hash, pk_str)
     tx_res = send_tx(signed)
     if "error" in tx_res:
         raise RuntimeError(f"add_public_key failed: {tx_res['error']}")
-    # kasih jeda biar node sinkron
     time.sleep(3)
     return True
 
@@ -408,58 +409,72 @@ def _write_action(buf, a):
 
 
 def send_tx(signed_tx):
-    res = rpc_call("broadcast_tx_commit", [
-        base64.b64encode(json.dumps(signed_tx).encode()).decode()
-    ])
+    res = rpc_call("broadcast_tx_commit", [signed_tx])
     return res
+
+
+def build_signed_tx(sk, account_id, receiver_id, actions, nonce, block_hash, pk_str):
+    """Buat transaksi borsh siap kirim (base64) pakai py_near_primitives."""
+    pk_bytes = bytes(sk.verify_key)
+    fc_actions = []
+    for a in actions:
+        fc = a["functionCall"]
+        fc_actions.append(FunctionCallAction(
+            fc["methodName"],
+            json.dumps(fc["args"]).encode(),
+            int(fc["gas"]),
+            int(fc["deposit"]),
+        ))
+    tx = Transaction(
+        account_id,
+        pk_bytes,
+        nonce,
+        receiver_id,
+        base58_decode(block_hash),
+        fc_actions,
+    )
+    # serialize transaksi (tanpa signature), sign hash-nya, gabung borsh
+    tx_bytes = tx.serialize()
+    sig = sk.sign(tx.get_hash()).signature
+    signed_borsh = tx_bytes + b"\x00" + sig  # enum 0 = ed25519 + 64 bytes
+    return base64.b64encode(signed_borsh).decode()
 
 
 # ── Intents signature (untuk auth backend) ──────────────────────────────────
 def sign_auth_intent(signing_key, account_id):
     """Sign NEAR intent seperti signAuthIntents() di web app HOT.
 
-    Web app (NEAR wallet) pakai NEP-413:
-      payload.message = JSON {signer_id, deadline, intents: []}
-      payload.recipient = "intents.near"
-      payload.nonce = base64(32 byte random)
-      signature = ed25519.sign(sha256(nep413_canonical_json))
-
-    Catatan: nonce untuk auth intent TIDAK pakai salt contract
-    (salt cuma untuk execute_intents on-chain).
+    Format (dari reverse-engineering backend api0.herewallet.app):
+      standard: raw_ed25519
+      payload: {signer_id, deadline, intents: [], nonce, verifying_contract}
+      nonce = base64(sha256("hot_auth_intent_" + auth_seed))
+      signature = ed25519.sign(payload_json_bytes)
     """
     seed = secrets.token_hex(32)
-    # deadline: 24 jam ke depan (sama kaya web app: now + 24*3600)
+    # nonce: sha256("hot_auth_intent_<seed>") -> base64
+    nonce_tag = f"hot_auth_intent_{seed}"
+    nonce_b64 = base64.b64encode(
+        hashlib.sha256(nonce_tag.encode("utf-8")).digest()
+    ).decode()
+
+    # deadline: 24 jam ke depan (sama kaya web app)
     deadline = (datetime.now(timezone.utc) + timedelta(hours=24)) \
         .replace(microsecond=0).isoformat().replace("+00:00", ".000Z")
-    nonce_raw = secrets.token_bytes(32)
-    nonce_b64 = base64.b64encode(nonce_raw).decode()
 
-    # message = JSON inner (urutan field SAMA kaya web app: signer_id, deadline, intents)
-    message = json.dumps({
+    payload_str = json.dumps({
         "signer_id": account_id.lower(),
         "deadline": deadline,
         "intents": [],
-    }, separators=(",", ":"))
-
-    # NEP-413 payload canonical (recipient, nonce, message)
-    nep413_payload = json.dumps({
-        "recipient": INTENTS_CONTRACT,
         "nonce": nonce_b64,
-        "message": message,
+        "verifying_contract": INTENTS_CONTRACT,
     }, separators=(",", ":"))
 
-    # signature: ed25519 over sha256(payload json bytes)
-    msg_hash = hashlib.sha256(nep413_payload.encode("utf-8")).digest()
-    sig = signing_key.sign(msg_hash).signature
+    sig = signing_key.sign(payload_str.encode("utf-8")).signature
     return {
         "signature": f"ed25519:{base58_encode(sig)}",
         "public_key": f"ed25519:{base58_encode(bytes(signing_key.verify_key))}",
-        "standard": "nep413",
-        "payload": {
-            "recipient": INTENTS_CONTRACT,
-            "nonce": nonce_b64,
-            "message": message,
-        },
+        "standard": "raw_ed25519",
+        "payload": payload_str,
     }, seed
 
 
@@ -484,7 +499,8 @@ class HotApi:
                            "Chrome/129.0.0.0 Safari/537.36"),
         }
         if self.jwt:
-            h["Authorization"] = f"Bearer {self.jwt}"
+            # backend HOT: Authorization tanpa prefix "Bearer"
+            h["Authorization"] = self.jwt
         return h
 
     def post(self, path, body):
@@ -587,9 +603,9 @@ def claim_account(account_id, private_key, charge_gas_fee=False):
             },
             "gas": 200_000_000_000_000,  # 200 TGas
             "deposit": 0,
-        }
+        },
     }]
-    signed = sign_transaction(sk, CONTRACT, actions, nonce, block_hash, account_id)
+    signed = build_signed_tx(sk, account_id, CONTRACT, actions, nonce, block_hash, pk_str)
     tx_res = send_tx(signed)
 
     if "error" in tx_res:
