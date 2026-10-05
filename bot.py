@@ -596,6 +596,12 @@ def claim_account(account_id, private_key, charge_gas_fee=False):
     log(f"  game: balance={balance_hot:.4f} HOT, storage={gs.get('storage')}, "
         f"last_claim={datetime.fromtimestamp(last_claim_s).strftime('%H:%M:%S')}")
 
+    # 2c) penjaga kedua: jangan claim sebelum storage bener-bener full.
+    # Scheduler bisa salah hitung (last_claim berubah), cek realitas dulu.
+    remaining = seconds_until_full(gs)
+    if remaining > 0:
+        return {"ok": False, "deferred": True, "wait": remaining}
+
     # 2b) otomatis charge_gas_fee kalau NEAR < 0.09 (sama kayak web app HOT)
     #     web app: if (near < 0.09 && gasFreeCount === 0 && !charge_gas_fee) throw
     #     fee HOT = 0.002 NEAR/claim, butuh saldo HOT cukup di contract
@@ -861,11 +867,19 @@ def main_loop():
                               res["balance_before"], res["balance_after"],
                               next_slot_str or "n/a")
                 else:
-                    log(f"❌ {aid} gagal: {res['error']}", "ERROR")
-                    st["status"] = "error"
-                    st["error"] = res["error"]
-                    st["next_claim_at"] = now + 600
-                    st["status"] = "waiting"
+                    if res.get("deferred"):
+                        jam = res.get("wait", 0) / 3600
+                        log(f"⏳ {aid} storage belum full — {jam:.1f} jam lagi. "
+                            f"Claim ditunda, timer gak di-reset.", "WARN")
+                        # jangan reset timer; tunggu sampai beneran full
+                        st["next_claim_at"] = now + min(res["wait"], 3600)
+                        st["status"] = "waiting"
+                    else:
+                        log(f"❌ {aid} gagal: {res['error']}", "ERROR")
+                        st["status"] = "error"
+                        st["error"] = res["error"]
+                        st["next_claim_at"] = now + 600
+                        st["status"] = "waiting"
             except Exception as e:
                 log(f"❌ {aid} exception: {e}", "ERROR")
                 st["status"] = "error"
