@@ -114,28 +114,27 @@ def banner():
 
 
 def table_init(rows):
-    """rows: list of (account, level, full_h, slot_time, wait_h)"""
-    print(f"\n{C.BOLD}  AKUN{C.R}      {C.BOLD}LVL{C.R} {C.BOLD}FULL{C.R}    {C.BOLD}SLOT{C.R}      {C.BOLD}TUNGGU{C.R}", flush=True)
-    print(C.GRY + "  " + "─" * 46 + C.R, flush=True)
-    for aid, lvl, full_h, slot, wait_h in rows:
-        print(f"  {C.CYN}{aid:<10}{C.R} {C.YLW}L{lvl:<2}{C.R} "
-              f"{full_h:>6.1f}h  {C.GRN}{slot}{C.R}  {C.GRY}{wait_h:>5.1f}h{C.R}", flush=True)
-    print(C.GRY + "  " + "─" * 46 + C.R, flush=True)
-    print(f"  {C.DIM}total {len(rows)} akun · tunggu storage full, lalu claim{C.R}\n", flush=True)
+    """rows: list of (account, saldo_hot, full_h, claim_time, wait_h)"""
+    print(f"\n{C.BOLD}  #  AKUN{C.R}            {C.BOLD}SALDO{C.R}      {C.BOLD}FULL DALAM{C.R}   {C.BOLD}CLAIM JAM{C.R}",
+          flush=True)
+    print(C.GRY + "  " + "─" * 52 + C.R, flush=True)
+    for i, (aid, hot, full_h, slot, wait_h) in enumerate(sorted(rows, key=lambda r: r[4]), 1):
+        print(f"  {C.GRY}{i:2d}.{C.R} {C.CYN}{aid:<14}{C.R} "
+              f"{C.YLW}{hot:>8.2f} HOT{C.R}  {full_h:>6.1f} jam   {C.GRN}{slot}{C.R}",
+              flush=True)
+    print(C.GRY + "  " + "─" * 52 + C.R, flush=True)
+    next_one = min(rows, key=lambda r: r[4])
+    print(f"  {C.DIM}{len(rows)} akun · claim terdekat: {next_one[0]} dalam "
+          f"{next_one[4]:.1f} jam ({next_one[3]}){C.R}\n", flush=True)
 
 
 def claim_box(aid, tx, mined, before, after, next_slot):
-    b = C.GRY + "  ┌" + "─" * 48 + "┐" + C.R
-    print(f"\n{b}", flush=True)
-    print(f"  {C.BOLD}⚡ CLAIM BERHASIL · {C.GRN}{aid}{C.R}", flush=True)
-    print(f"  {C.GRY}├────────────────────────────────────────────────┤{C.R}", flush=True)
-    print(f"  {C.BOLD}HOT sebelum{C.R} : {before:.4f}", flush=True)
-    print(f"  {C.BOLD}HOT sesudah{C.R}: {C.GRN}{after:.4f}{C.R}", flush=True)
-    print(f"  {C.BOLD}Masuk{C.R}      : {C.GRN}+{mined:.6f} HOT{C.R} 🔥", flush=True)
-    print(f"  {C.BOLD}TX{C.R}         : {C.CYN}{tx[:20]}...{C.R}", flush=True)
-    print(f"  {C.GRY}├────────────────────────────────────────────────┤{C.R}", flush=True)
-    print(f"  {C.BOLD}Next claim {C.R}: {C.YLW}{next_slot}{C.R}", flush=True)
-    print(C.GRY + "  └" + "─" * 48 + "┘" + C.R, flush=True)
+    print(f"\n{C.GRY}  ┌──────────────────────────────────────────────┐{C.R}", flush=True)
+    print(f"  {C.BOLD}🔥 {aid} · +{mined:.2f} HOT{C.R}", flush=True)
+    print(f"  {C.GRY}├──────────────────────────────────────────────┤{C.R}", flush=True)
+    print(f"  {C.BOLD}Saldo{C.R} : {before:.2f} → {C.GRN}{after:.2f} HOT{C.R}")
+    print(f"  {C.BOLD}Next{C.R} : {C.YLW}{next_slot}{C.R}", flush=True)
+    print(f"  {C.GRY}└──────────────────────────────────────────────┘{C.R}", flush=True)
 
 
 # ── NEAR helpers ────────────────────────────────────────────────────────────
@@ -788,6 +787,7 @@ def main_loop():
         return
 
     state = load_state()
+    last_beat = 0
 
     # Inisialisasi: hitung kapan storage full untuk tiap akun
     all_ids = [a["account_id"] for a in accounts]
@@ -812,8 +812,8 @@ def main_loop():
                 "hot_balance": gs.get("balance", 0) / 1e6,
                 "cycle": 0,
             }
-            slot_time = datetime.fromtimestamp(slot_ts).strftime("%m-%d %H:%M")
-            rows.append((aid, gs.get("storage"), rem / 3600, slot_time, wait / 3600))
+            slot_time = datetime.fromtimestamp(slot_ts).strftime("%H:%M")
+            rows.append((aid, gs.get("balance", 0) / 1e6, rem / 3600, slot_time, wait / 3600))
         except Exception as e:
             log(f"{aid}: {e}", "ERROR")
             state[aid] = {"status": "error", "error": str(e)}
@@ -855,7 +855,7 @@ def main_loop():
                             st["cycle"] = cyc
                             st["storage_level"] = gs2.get("storage")
                             st["hot_balance"] = gs2.get("balance", 0) / 1e6
-                            next_slot_str = datetime.fromtimestamp(nts).strftime("%m-%d %H:%M")
+                            next_slot_str = datetime.fromtimestamp(nts).strftime("%H:%M")
                     except Exception as e:
                         log(f"{aid}: gagal baca state setelah claim: {e}", "WARN")
                         st["next_claim_at"] = now + 3600
@@ -889,6 +889,21 @@ def main_loop():
             save_state(state)
             # jeda antar akun biar gak kena rate limit RPC/backend
             time.sleep(3)
+
+        # heartbeat tiap 10 menit biar kelihatan masih idup
+        if now - last_beat >= 600:
+            last_beat = now
+            pending = [(a["account_id"], st2.get("next_claim_at", 0))
+                       for a, st2 in [(a, state.get(a["account_id"], {})) for a in accounts]]
+            nxt = min((p for p in pending if p[1]), key=lambda p: p[1], default=None)
+            if nxt:
+                d = nxt[1] - now
+                if d > 0:
+                    h, m = int(d // 3600), int((d % 3600) // 60)
+                    log(f"♥ {len(accounts)} akun · claim berikutnya: {nxt[0]} "
+                        f"dalam {h}j{m}m", "INFO")
+                else:
+                    log(f"♥ {len(accounts)} akun · {nxt[0]} siap di-claim", "INFO")
 
         # sleep 60 detik sebelum cek lagi
         time.sleep(60)
