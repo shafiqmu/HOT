@@ -561,7 +561,7 @@ class HotApi:
         log(f"  auth: JWT acquired ✓")
         return self.jwt
 
-    def get_claim_signature(self, game_state, charge_gas_fee=True):
+    def get_claim_signature(self, game_state, charge_gas_fee=False):
         # web app hanya kirim game_state (charge_gas_fee cuma di l2_claim)
         body = {"game_state": game_state}
         res = self.post("/api/v1/user/hot/claim/signature", body)
@@ -576,14 +576,15 @@ def get_game_state(account_id):
 
 
 # ── Claim satu akun ─────────────────────────────────────────────────────────
-def claim_account(account_id, private_key, charge_gas_fee=True):
+def claim_account(account_id, private_key, charge_gas_fee=False):
     sk, pk_str = parse_near_key(private_key)
 
     # 1) cek akun & access key
     st = get_account_state(account_id)
     if st is None:
         return {"ok": False, "error": f"Akun NEAR {account_id} tidak ditemukan"}
-    log(f"  balance: {int(st['amount'])/1e24:.4f} NEAR")
+    near_balance = int(st['amount']) / 1e24
+    log(f"  balance: {near_balance:.4f} NEAR")
 
     # 2) game state
     gs = get_game_state(account_id)
@@ -594,6 +595,19 @@ def claim_account(account_id, private_key, charge_gas_fee=True):
     balance_hot = gs.get("balance", 0) / 1e18
     log(f"  game: balance={balance_hot:.4f} HOT, storage={gs.get('storage')}, "
         f"last_claim={datetime.fromtimestamp(last_claim_s).strftime('%H:%M:%S')}")
+
+    # 2b) otomatis charge_gas_fee kalau NEAR < 0.09 (sama kayak web app HOT)
+    #     web app: if (near < 0.09 && gasFreeCount === 0 && !charge_gas_fee) throw
+    #     fee HOT = 0.002 NEAR/claim, butuh saldo HOT cukup di contract
+    if not charge_gas_fee and near_balance < 0.09:
+        # 0.002 NEAR in HOT ~ 0.002 * 10 = 0.02 HOT (rate approx)
+        hot_needed = 0.02
+        if balance_hot >= hot_needed:
+            log(f"  NEAR < 0.09 → charge_gas_fee=True (bayar pakai HOT)")
+            charge_gas_fee = True
+        else:
+            log(f"  WARNING: NEAR {near_balance:.4f} < 0.09 tapi saldo HOT {balance_hot:.6f} "
+                f"juga kurang (butuh {hot_needed} HOT). Bayar NEAR saja.", "WARN")
 
     # 3) daftarin pk ke intents.near kalau belum (wajib sebelum auth)
     if not is_pk_registered_intents(account_id, pk_str):
