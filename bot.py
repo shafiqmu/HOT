@@ -114,18 +114,27 @@ def banner():
 
 
 def table_init(rows):
-    """rows: list of (account, saldo_hot, full_h, claim_time, wait_h)"""
-    print(f"\n{C.BOLD}  #  AKUN{C.R}            {C.BOLD}SALDO{C.R}      {C.BOLD}FULL DALAM{C.R}   {C.BOLD}CLAIM JAM{C.R}",
-          flush=True)
-    print(C.GRY + "  " + "─" * 52 + C.R, flush=True)
-    for i, (aid, hot, full_h, slot, wait_h) in enumerate(sorted(rows, key=lambda r: r[4]), 1):
+    """rows: list of (account, saldo_hot, level, full_h, slot_ts, wait_h)"""
+    print(f"\n{C.BOLD}  #  AKUN{C.R}             {C.BOLD}SALDO{C.R}      {C.BOLD}LVL{C.R} "
+          f"{C.BOLD}FULL DALAM{C.R}  {C.BOLD}NEXT CLAIM{C.R}   {C.BOLD}STATUS{C.R}", flush=True)
+    print(C.GRY + "  " + "─" * 62 + C.R, flush=True)
+    for i, (aid, hot, lvl, full_h, slot_ts, wait_h) in enumerate(sorted(rows, key=lambda r: r[5]), 1):
+        slot = datetime.fromtimestamp(slot_ts).strftime("%m-%d %H:%M")
+        waste_h = wait_h - full_h
+        if waste_h <= 1.5:
+            status = f"{C.GRN}✓ optimal{C.R}"
+        elif waste_h <= 4:
+            status = f"{C.YLW}~{waste_h:.0f}j nunggu{C.R}"
+        else:
+            status = f"{C.RED}⚠ {waste_h:.0f}j wasted{C.R}"
         print(f"  {C.GRY}{i:2d}.{C.R} {C.CYN}{aid:<14}{C.R} "
-              f"{C.YLW}{hot:>8.2f} HOT{C.R}  {full_h:>6.1f} jam   {C.GRN}{slot}{C.R}",
-              flush=True)
-    print(C.GRY + "  " + "─" * 52 + C.R, flush=True)
-    next_one = min(rows, key=lambda r: r[4])
-    print(f"  {C.DIM}{len(rows)} akun · claim terdekat: {next_one[0]} dalam "
-          f"{next_one[4]:.1f} jam ({next_one[3]}){C.R}\n", flush=True)
+              f"{C.YLW}{hot:>8.2f} HOT{C.R}  {lvl:>2}   {full_h:>6.1f} jam   "
+              f"{C.GRN}{slot}{C.R}  {status}", flush=True)
+    print(C.GRY + "  " + "─" * 62 + C.R, flush=True)
+    total_hot = sum(r[1] for r in rows)
+    next_one = min(rows, key=lambda r: r[5])
+    print(f"  {C.DIM}{len(rows)} akun · total {total_hot:.2f} HOT · "
+          f"claim terdekat: {next_one[0]} ({next_one[3]:.1f}j){C.R}\n", flush=True)
 
 
 def claim_box(aid, tx, mined, before, after, next_slot):
@@ -811,8 +820,9 @@ def main_loop():
                 "hot_balance": gs.get("balance", 0) / 1e6,
                 "cycle": 0,
             }
-            slot_time = datetime.fromtimestamp(slot_ts).strftime("%H:%M")
-            rows.append((aid, gs.get("balance", 0) / 1e6, rem / 3600, slot_time, wait / 3600))
+            slot_time = datetime.fromtimestamp(slot_ts).strftime("%m-%d %H:%M")
+            rows.append((aid, gs.get("balance", 0) / 1e6, gs.get("storage"),
+                         rem / 3600, slot_ts, wait / 3600))
         except Exception as e:
             log(f"{aid}: {e}", "ERROR")
             state[aid] = {"status": "error", "error": str(e)}
