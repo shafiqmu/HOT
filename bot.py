@@ -787,7 +787,6 @@ def main_loop():
         return
 
     state = load_state()
-    last_beat = 0
 
     # Inisialisasi: hitung kapan storage full untuk tiap akun
     all_ids = [a["account_id"] for a in accounts]
@@ -889,21 +888,6 @@ def main_loop():
             save_state(state)
             # jeda antar akun biar gak kena rate limit RPC/backend
             time.sleep(3)
-
-        # heartbeat tiap 10 menit biar kelihatan masih idup
-        if now - last_beat >= 600:
-            last_beat = now
-            pending = [(a["account_id"], st2.get("next_claim_at", 0))
-                       for a, st2 in [(a, state.get(a["account_id"], {})) for a in accounts]]
-            nxt = min((p for p in pending if p[1]), key=lambda p: p[1], default=None)
-            if nxt:
-                d = nxt[1] - now
-                if d > 0:
-                    h, m = int(d // 3600), int((d % 3600) // 60)
-                    log(f"♥ {len(accounts)} akun · claim berikutnya: {nxt[0]} "
-                        f"dalam {h}j{m}m", "INFO")
-                else:
-                    log(f"♥ {len(accounts)} akun · {nxt[0]} siap di-claim", "INFO")
 
         # sleep 60 detik sebelum cek lagi
         time.sleep(60)
