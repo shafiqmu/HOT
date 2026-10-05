@@ -62,7 +62,7 @@ def check_one(account_id, private_key, do_auth=False):
     if gs is None:
         print("❌ Akun belum terdaftar di game.hot.tg")
         return False
-    hot_bal = gs.get("balance", 0) / 1e18
+    hot_bal = gs.get("balance", 0) / 1e6  # HOT: 6 desimal (ft_metadata)
     last = datetime.fromtimestamp(gs.get("last_claim", 0) / 1e9)
     elapsed_h = (time.time() - last.timestamp()) / 3600
     print(f"HOT        : {hot_bal:.4f} HOT")

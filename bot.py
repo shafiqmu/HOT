@@ -592,7 +592,7 @@ def claim_account(account_id, private_key, charge_gas_fee=False):
         return {"ok": False, "error": "Belum terdaftar di game.hot.tg (get_user null)"}
     last_claim_ns = gs.get("last_claim", 0)
     last_claim_s = last_claim_ns / 1e9
-    balance_hot = gs.get("balance", 0) / 1e18
+    balance_hot = gs.get("balance", 0) / 1e6  # HOT: 6 desimal (ft_metadata)
     log(f"  game: balance={balance_hot:.4f} HOT, storage={gs.get('storage')}, "
         f"last_claim={datetime.fromtimestamp(last_claim_s).strftime('%H:%M:%S')}")
 
@@ -659,7 +659,7 @@ def claim_account(account_id, private_key, charge_gas_fee=False):
                   for o in outcomes) if outcomes else True
     tx_hash = tx_res.get("transaction", {}).get("hash", "?")
     new_gs = get_game_state(account_id)
-    new_bal = (new_gs or {}).get("balance", 0) / 1e18
+    new_bal = (new_gs or {}).get("balance", 0) / 1e6
     return {
         "ok": True,
         "tx_hash": tx_hash,
@@ -809,7 +809,7 @@ def main_loop():
                 "status": "waiting",
                 "next_claim_at": time.time() + wait,
                 "storage_level": gs.get("storage"),
-                "hot_balance": gs.get("balance", 0) / 1e18,
+                "hot_balance": gs.get("balance", 0) / 1e6,
                 "cycle": 0,
             }
             slot_time = datetime.fromtimestamp(slot_ts).strftime("%m-%d %H:%M")
@@ -854,7 +854,7 @@ def main_loop():
                             st["next_claim_at"] = nts
                             st["cycle"] = cyc
                             st["storage_level"] = gs2.get("storage")
-                            st["hot_balance"] = gs2.get("balance", 0) / 1e18
+                            st["hot_balance"] = gs2.get("balance", 0) / 1e6
                             next_slot_str = datetime.fromtimestamp(nts).strftime("%m-%d %H:%M")
                     except Exception as e:
                         log(f"{aid}: gagal baca state setelah claim: {e}", "WARN")

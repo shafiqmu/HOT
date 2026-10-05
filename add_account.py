@@ -72,7 +72,7 @@ def process_pk(pk, accounts, existing_pks):
         if gs is None:
             extra = " (belum mining)"
         else:
-            bal = gs.get("balance", 0) / 1e18
+            bal = gs.get("balance", 0) / 1e6  # HOT: 6 desimal (ft_metadata)
             extra = f" HOT {bal:.4f} · L{gs.get('storage')}"
     except Exception:
         pass
