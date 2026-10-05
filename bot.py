@@ -164,21 +164,41 @@ def parse_near_key(key_str: str):
 
 
 # ── RPC ─────────────────────────────────────────────────────────────────────
+# Multiple RPC - rpc.mainnet.near.org limit request ketat (429 kalau 14 akun
+# beruntun). Rotate ke RPC lain kalau ada yang kena rate limit.
+RPC_URLS = [
+    "https://rpc.mainnet.near.org",
+    "https://rpc.mainnet.fastnear.com",
+    "https://near.drpc.org",
+    "https://1rpc.io/near",
+]
+_rpc_idx = 0
+
+
 def rpc_call(method, params):
     """Call NEAR JSON-RPC. Return result or raise."""
+    global _rpc_idx
     payload = {"jsonrpc": "2.0", "id": int(time.time()), "method": method, "params": params}
-    for attempt in range(3):
+    last_err = None
+    for attempt in range(6):
+        url = RPC_URLS[_rpc_idx % len(RPC_URLS)]
         try:
-            r = requests.post(RPC_URL, json=payload, timeout=30)
+            r = requests.post(url, json=payload, timeout=30)
+            if r.status_code == 429:
+                # rate limit: ganti RPC
+                _rpc_idx += 1
+                raise RuntimeError("429 rate limit, ganti RPC")
             r.raise_for_status()
             data = r.json()
             if "error" in data:
                 raise RuntimeError(f"RPC error: {data['error']}")
             return data.get("result")
         except Exception as e:
-            if attempt == 2:
-                raise
-            time.sleep(2 * (attempt + 1))
+            last_err = e
+            # kalau RPC ini bermasalah, coba yg lain
+            _rpc_idx += 1
+            time.sleep(1.5 * (attempt + 1))
+    raise RuntimeError(f"semua RPC gagal: {last_err}")
 
 
 def view_function(contract, method, args_dict):
@@ -601,7 +621,7 @@ def claim_account(account_id, private_key, charge_gas_fee=False):
                 "mining_time": str(sig_res["mining_time"]),
                 "max_ts": str(sig_res["max_ts"]),
             },
-            "gas": 200_000_000_000_000,  # 200 TGas
+            "gas": 30 * 10**12,  # 30 TGas (web app: 20 TGas + margin)
             "deposit": 0,
         },
     }]
@@ -838,6 +858,8 @@ def main_loop():
                 st["next_claim_at"] = now + 600
                 st["status"] = "waiting"
             save_state(state)
+            # jeda antar akun biar gak kena rate limit RPC/backend
+            time.sleep(3)
 
         # sleep 60 detik sebelum cek lagi
         time.sleep(60)
