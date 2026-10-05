@@ -113,6 +113,22 @@ def banner():
     print(C.GRY + "  " + "─" * 48 + C.R, flush=True)
 
 
+def table_from_state(accounts, state):
+    """Refresh tabel dari state (dipanggil setelah claim)."""
+    rows = []
+    for acc in accounts:
+        aid = acc["account_id"]
+        st = state.get(aid) or {}
+        nxt = st.get("next_claim_at") or 0
+        last = st.get("last_claim_ts") or 0
+        lvl = st.get("storage_level") or 25
+        cap = storage_capacity_ms(lvl) / 1000
+        full_h = max(0, (last + cap - time.time()) / 3600) if last else 0
+        wait_h = max(0, (nxt - time.time()) / 3600) if nxt else 999
+        rows.append((aid, st.get("hot_balance", 0), lvl, full_h, nxt, wait_h))
+    table_init(rows)
+
+
 def table_init(rows):
     """rows: list of (account, saldo_hot, level, full_h, slot_ts, wait_h)"""
     print(f"\n{C.BOLD}  #  AKUN{C.R}             {C.BOLD}SALDO{C.R}      {C.BOLD}LVL{C.R} "
@@ -819,6 +835,7 @@ def main_loop():
                 "storage_level": gs.get("storage"),
                 "hot_balance": gs.get("balance", 0) / 1e6,
                 "cycle": 0,
+                "last_claim_ts": last_claim_sec,
             }
             slot_time = datetime.fromtimestamp(slot_ts).strftime("%m-%d %H:%M")
             rows.append((aid, gs.get("balance", 0) / 1e6, gs.get("storage"),
@@ -865,16 +882,19 @@ def main_loop():
                             st["storage_level"] = gs2.get("storage")
                             st["hot_balance"] = gs2.get("balance", 0) / 1e6
                             next_slot_str = datetime.fromtimestamp(nts).strftime("%H:%M")
+                            st["last_claim_ts"] = last2
                     except Exception as e:
                         log(f"{aid}: gagal baca state setelah claim: {e}", "WARN")
                         st["next_claim_at"] = now + 3600
                     st["status"] = "waiting"
                     st["last_tx"] = res["tx_hash"]
                     st["last_mined"] = res["mined"]
+                    st["hot_balance"] = res.get("balance_after", st.get("hot_balance", 0))
                     save_state(state)
-                    claim_box(aid, res["tx_hash"], res["mined"],
-                              res["balance_before"], res["balance_after"],
-                              next_slot_str or "n/a")
+                    log(f"✅ {aid} · +{res['mined']:.2f} HOT · "
+                        f"saldo {res['balance_before']:.2f} → {res['balance_after']:.2f} · "
+                        f"next {next_slot_str or 'n/a'}", "OK")
+                    table_from_state(accounts, state)
                 else:
                     if res.get("deferred"):
                         jam = res.get("wait", 0) / 3600
