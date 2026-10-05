@@ -561,7 +561,8 @@ class HotApi:
         log(f"  auth: JWT acquired ✓")
         return self.jwt
 
-    def get_claim_signature(self, game_state, charge_gas_fee=False):
+    def get_claim_signature(self, game_state, charge_gas_fee=True):
+        # web app hanya kirim game_state (charge_gas_fee cuma di l2_claim)
         body = {"game_state": game_state}
         res = self.post("/api/v1/user/hot/claim/signature", body)
         if "signature" not in res:
@@ -575,7 +576,7 @@ def get_game_state(account_id):
 
 
 # ── Claim satu akun ─────────────────────────────────────────────────────────
-def claim_account(account_id, private_key, charge_gas_fee=False):
+def claim_account(account_id, private_key, charge_gas_fee=True):
     sk, pk_str = parse_near_key(private_key)
 
     # 1) cek akun & access key
